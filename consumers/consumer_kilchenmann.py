@@ -56,40 +56,32 @@ DB_FILE_PATH = BASE_DATA_PATH / "streamed_messages.sqlite"
 
 def initialize_csv(file_path: str) -> None:
     """
-    Create the CSV file with a header if it does not exist.
+    Create the CSV file with only 'message' and 'author' columns.
     """
     if not os.path.exists(file_path):
         with open(file_path, mode="w", newline="") as csvfile:
-            fieldnames = [
-                "message",
-                "author",
-                "timestamp",
-                "category",
-                "sentiment",
-                "keyword_mentioned",
-                "message_length",
-            ]
+            fieldnames = ["message", "author"]
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
         logger.info(f"CSV file initialized with header at: {file_path}")
 
 def append_to_csv(file_path: str, message: dict) -> None:
     """
-    Append a single message as a row in the CSV file.
+    Append only 'message' and 'author' fields to the CSV file.
     """
     with open(file_path, mode="a", newline="") as csvfile:
-        fieldnames = [
-            "message",
-            "author",
-            "timestamp",
-            "category",
-            "sentiment",
-            "keyword_mentioned",
-            "message_length",
-        ]
+        fieldnames = ["message", "author"]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writerow(message)
-    logger.info(f"Appended message from author '{message.get('author')}' to CSV.")
+
+        # Extract only relevant fields
+        row = {
+            "message": message.get("message", ""),
+            "author": message.get("author", "Unknown")
+        }
+
+        writer.writerow(row)
+    logger.info(f"Appended message from author '{row['author']}' to CSV.")
+
 
 def generate_bar_chart(author_counts: dict, output_path: str) -> None:
     """
