@@ -27,7 +27,7 @@ from kafka import KafkaConsumer
 # Ensure the parent directory is in sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from consumers.db_sqlite_case import init_db, insert_message
-
+import db_sqlite_case as db_sqlite
 import utils.utils_config as config
 from utils.utils_logger import logger
 #####################################
