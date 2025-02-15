@@ -1,198 +1,193 @@
-""" db_sqlite_case.py 
+"""
+consumer_kilchenmann.py
 
-Has the following functions:
-- init_db(config): Initialize the SQLite database and create the 'streamed_messages' table if it doesn't exist.
-- insert_message(message, config): Insert a single processed message into the SQLite database.
-
-Example JSON message
-{
-    "message": "I just shared a meme! It was amazing.",
-    "author": "Charlie",
-    "timestamp": "2025-01-29 14:35:20",
-    "category": "humor",
-    "sentiment": 0.87,
-    "keyword_mentioned": "meme",
-    "message_length": 42
-}
-
+Kafka consumer that:
+- Processes messages from Kafka.
+- When a message's 'keyword_mentioned' is "Python", it writes the message to a CSV file,
+  inserts it into a SQLite database, and updates a count for the author.
+- Upon shutdown, generates a bar chart showing how many times each author mentioned "Python".
 """
 
 #####################################
 # Import Modules
 #####################################
 
-# import from standard library
+# Standard library imports
+import json
+import csv
 import os
+import sys
+from collections import defaultdict
 import pathlib
-import sqlite3
 
-# import from local modules
+# External modules
+from kafka import KafkaConsumer
+import matplotlib.pyplot as plt
+
+# Local modules
 import utils.utils_config as config
 from utils.utils_logger import logger
+import db_sqlite_case as db_sqlite  # Our SQLite helper module
 
 #####################################
-# Define Function to Initialize SQLite Database
+# Define File Paths
 #####################################
 
+# CSV file path for Python messages
+CSV_FILE_PATH = "python_messages.csv"
 
-def init_db(db_path: pathlib.Path):
+# Bar chart output path
+BAR_CHART_PATH = "python_mentions_by_author.png"
+
+# SQLite Database file path (using config base data path)
+try:
+    BASE_DATA_PATH: pathlib.Path = config.get_base_data_path()  # Assuming this returns a Path
+except Exception as e:
+    logger.error(f"ERROR: Could not get base data path: {e}")
+    sys.exit(1)
+DB_FILE_PATH = BASE_DATA_PATH / "streamed_messages.sqlite"
+
+#####################################
+# Helper Functions
+#####################################
+
+def initialize_csv(file_path: str) -> None:
     """
-    Initialize the SQLite database -
-    if it doesn't exist, create the 'streamed_messages' table
-    and if it does, recreate it.
-
-    Args:
-    - db_path (pathlib.Path): Path to the SQLite database file.
-
+    Create the CSV file with a header if it does not exist.
     """
-    logger.info("Calling SQLite init_db() with {db_path=}.")
+    if not os.path.exists(file_path):
+        with open(file_path, mode="w", newline="") as csvfile:
+            fieldnames = [
+                "message",
+                "author",
+                "timestamp",
+                "category",
+                "sentiment",
+                "keyword_mentioned",
+                "message_length",
+            ]
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+        logger.info(f"CSV file initialized with header at: {file_path}")
+
+def append_to_csv(file_path: str, message: dict) -> None:
+    """
+    Append a single message as a row in the CSV file.
+    """
+    with open(file_path, mode="a", newline="") as csvfile:
+        fieldnames = [
+            "message",
+            "author",
+            "timestamp",
+            "category",
+            "sentiment",
+            "keyword_mentioned",
+            "message_length",
+        ]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writerow(message)
+    logger.info(f"Appended message from author '{message.get('author')}' to CSV.")
+
+def generate_bar_chart(author_counts: dict, output_path: str) -> None:
+    """
+    Generate and save a bar chart from the author counts.
+    """
+    if not author_counts:
+        logger.warning("No data to generate a bar chart.")
+        return
+
+    authors = list(author_counts.keys())
+    counts = [author_counts[author] for author in authors]
+
+    plt.figure(figsize=(8, 6))
+    bars = plt.bar(authors, counts, color="skyblue")
+    plt.xlabel("Author")
+    plt.ylabel("Number of 'Python' Mentions")
+    plt.title("Mentions of 'Python' by Author")
+    plt.ylim(0, max(counts) + 1)
+
+    # Add count labels above each bar
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(
+            bar.get_x() + bar.get_width() / 2,
+            height,
+            str(height),
+            ha="center",
+            va="bottom",
+        )
+
+    plt.tight_layout()
+    plt.savefig(output_path)
+    logger.info(f"Bar chart saved to {output_path}.")
+
+#####################################
+# Main Consumer Function
+#####################################
+
+def main() -> None:
+    logger.info("Starting Kafka consumer for 'Python' messages with SQLite integration.")
+
+    # Read environment variables for Kafka
     try:
-        # Ensure the directories for the db exist
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-
-        with sqlite3.connect(db_path) as conn:
-            cursor = conn.cursor()
-            logger.info("SUCCESS: Got a cursor to execute SQL.")
-
-            cursor.execute("DROP TABLE IF EXISTS streamed_messages;")
-
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS streamed_messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    message TEXT,
-                    author TEXT,
-                    timestamp TEXT,
-                    category TEXT,
-                    sentiment REAL,
-                    keyword_mentioned TEXT,
-                    message_length INTEGER
-                )
-            """
-            )
-            conn.commit()
-        logger.info(f"SUCCESS: Database initialized and table ready at {db_path}.")
+        kafka_server: str = config.get_kafka_broker_address()
+        topic: str = config.get_kafka_topic()
     except Exception as e:
-        logger.error(f"ERROR: Failed to initialize a sqlite database at {db_path}: {e}")
+        logger.error(f"ERROR: Failed to read environment variables: {e}")
+        sys.exit(1)
 
+    # Initialize CSV file
+    initialize_csv(CSV_FILE_PATH)
 
-#####################################
-# Define Function to Insert a Processed Message into the Database
-#####################################
+    # Initialize SQLite database
+    db_sqlite.init_db(DB_FILE_PATH)
 
+    # Dictionary to count the number of "Python" mentions per author
+    author_counts = defaultdict(int)
 
-def insert_message(message: dict, db_path: pathlib.Path) -> None:
-    """
-    Insert a single processed message into the SQLite database.
-
-    Args:
-    - message (dict): Processed message to insert.
-    - db_path (pathlib.Path): Path to the SQLite database file.
-    """
-    logger.info("Calling SQLite insert_message() with:")
-    logger.info(f"{message=}")
-    logger.info(f"{db_path=}")
-
-    STR_PATH = str(db_path)
+    # Create Kafka consumer
     try:
-        with sqlite3.connect(STR_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO streamed_messages (
-                    message, author, timestamp, category, sentiment, keyword_mentioned, message_length
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-                (
-                    message["message"],
-                    message["author"],
-                    message["timestamp"],
-                    message["category"],
-                    message["sentiment"],
-                    message["keyword_mentioned"],
-                    message["message_length"],
-                ),
-            )
-            conn.commit()
-        logger.info("Inserted one message into the database.")
+        consumer = KafkaConsumer(
+            topic,
+            bootstrap_servers=kafka_server,
+            auto_offset_reset="earliest",
+            value_deserializer=lambda x: json.loads(x.decode("utf-8")),
+        )
+        logger.info(f"Connected to Kafka topic '{topic}' at {kafka_server}.")
     except Exception as e:
-        logger.error(f"ERROR: Failed to insert message into the database: {e}")
+        logger.error(f"ERROR: Kafka consumer connection failed: {e}")
+        sys.exit(2)
 
+    logger.info("Consuming messages. Press Ctrl+C to exit and generate the bar chart.")
 
-#####################################
-# Define Function to Delete a Message from the Database
-#####################################
-
-
-def delete_message(message_id: int, db_path: pathlib.Path) -> None:
-    """
-    Delete a message from the SQLite database by its ID.
-
-    Args:
-    - message_id (int): ID of the message to delete.
-    - db_path (pathlib.Path): Path to the SQLite database file.
-    """
-    STR_PATH = str(db_path)
     try:
-        with sqlite3.connect(STR_PATH) as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM streamed_messages WHERE id = ?", (message_id,))
-            conn.commit()
-        logger.info(f"Deleted message with id {message_id} from the database.")
-    except Exception as e:
-        logger.error(f"ERROR: Failed to delete message from the database: {e}")
+        for msg in consumer:
+            message = msg.value
+            logger.info(f"Received message: {message}")
 
+            # Process only messages that mention "Python"
+            if message.get("keyword_mentioned") == "Python":
+                # Append the message to CSV
+                append_to_csv(CSV_FILE_PATH, message)
 
-#####################################
-# Define main() function for testing
-#####################################
-def main():
-    logger.info("Starting db testing.")
+                # Insert the message into the SQLite database
+                db_sqlite.insert_message(message, DB_FILE_PATH)
 
-    # Use config to make a path to a parallel test database
-    DATA_PATH: pathlib.path = config.get_base_data_path
-    TEST_DB_PATH: pathlib.Path = DATA_PATH / "test_buzz.sqlite"
-
-    # Initialize the SQLite database by passing in the path
-    init_db(TEST_DB_PATH)
-    logger.info(f"Initialized database file at {TEST_DB_PATH}.")
-
-    test_message = {
-        "message": "I just shared a meme! It was amazing.",
-        "author": "Charlie",
-        "timestamp": "2025-01-29 14:35:20",
-        "category": "humor",
-        "sentiment": 0.87,
-        "keyword_mentioned": "meme",
-        "message_length": 42,
-    }
-
-    insert_message(test_message, TEST_DB_PATH)
-
-    # Retrieve the ID of the inserted test message
-    try:
-        with sqlite3.connect(TEST_DB_PATH, timeout=1.0) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id FROM streamed_messages WHERE message = ? AND author = ?",
-                (test_message["message"], test_message["author"]),
-            )
-            row = cursor.fetchone()
-            if row:
-                test_message_id = row[0]
-                # Delete the test message
-                delete_message(test_message_id, TEST_DB_PATH)
+                # Update the count for the author
+                author = message.get("author", "Unknown")
+                author_counts[author] += 1
+                logger.info(f"Updated count for author '{author}': {author_counts[author]}")
             else:
-                logger.warning("Test message not found; nothing to delete.")
+                logger.debug("Message does not mention 'Python'; skipping CSV and DB insert.")
+    except KeyboardInterrupt:
+        logger.warning("Consumer interrupted by user. Shutting down...")
     except Exception as e:
-        logger.error(f"ERROR: Failed to retrieve or delete test message: {e}")
-
-    logger.info("Finished testing.")
-
-
-# #####################################
-# Conditional Execution
-#####################################
+        logger.error(f"Unexpected error in consumer: {e}")
+    finally:
+        consumer.close()
+        logger.info("Kafka consumer closed.")
+        # Generate the bar chart using collected counts
+        generate_bar_chart(author_counts, BAR_CHART_PATH)
 
 if __name__ == "__main__":
     main()
