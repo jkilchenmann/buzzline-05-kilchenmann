@@ -28,6 +28,8 @@ from kafka import KafkaConsumer
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from consumers.db_sqlite_case import init_db, insert_message
 
+import utils.utils_config as config
+from utils.utils_logger import logger
 #####################################
 # Define File Paths
 #####################################
