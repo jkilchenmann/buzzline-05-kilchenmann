@@ -19,15 +19,14 @@ import os
 import sys
 from collections import defaultdict
 import pathlib
+import matplotlib.pyplot as plt
 
 # External modules
 from kafka import KafkaConsumer
-import matplotlib.pyplot as plt
 
-# Local modules
-import utils.utils_config as config
-from utils.utils_logger import logger
-import db_sqlite_case as db_sqlite  # Our SQLite helper module
+# Ensure the parent directory is in sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from consumers.db_sqlite_case import init_db, insert_message
 
 #####################################
 # Define File Paths
